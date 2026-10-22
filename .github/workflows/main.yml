@@ -1,0 +1,119 @@
+# ============================================================
+# CI/CD Pipeline — Node.js DevOps Demo App
+# ============================================================
+#
+# What this workflow does (in order):
+#   1. Triggers on every push to `main` and on manual dispatch.
+#   2. [Job: test] Checks out code, sets up Node.js 24,
+#      installs deps, and runs the test suite. The whole
+#      pipeline stops immediately if any test fails.
+#   3. [Job: build-and-push] Runs only when `test` succeeds.
+#      Builds the Docker image with Docker Buildx and pushes
+#      it to Docker Hub tagged as :latest.
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   DOCKERHUB_USERNAME  — your Docker Hub username
+#   DOCKERHUB_TOKEN     — a Docker Hub access token (not your password)
+# ============================================================
+
+name: CI/CD Pipeline
+
+# ── Triggers ────────────────────────────────────────────────
+on:
+  push:
+    branches:
+      - main          # Run automatically on every push to main
+  workflow_dispatch:  # Allow manual runs from the GitHub Actions UI
+
+# ── Minimum permissions (principle of least privilege) ──────
+permissions:
+  contents: read      # Required by actions/checkout to read the repo
+
+# ════════════════════════════════════════════════════════════
+# Job 1 — test
+# Purpose: Verify the application is correct before we publish
+#          anything to Docker Hub.
+# ════════════════════════════════════════════════════════════
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest   # GitHub-hosted Ubuntu runner
+
+    steps:
+      # ── Step 1: Check out the repository ──────────────────
+      # Fetches the full source code onto the runner so
+      # subsequent steps can access all project files.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Set up Node.js 24 ─────────────────────────
+      # Installs the specified Node.js version and also enables
+      # the built-in npm cache to speed up future runs.
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'        # Cache ~/.npm based on package-lock.json
+
+      # ── Step 3: Install dependencies ──────────────────────
+      # `npm ci` is preferred over `npm install` in CI because
+      # it does a clean install using package-lock.json exactly,
+      # making builds reproducible and faster.
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Step 4: Run tests ──────────────────────────────────
+      # Executes `node --test tests/app.test.js` (defined in
+      # package.json). If any test fails, this step exits with
+      # a non-zero code, which fails the job and prevents the
+      # build-and-push job from running.
+      - name: Run tests
+        run: npm test
+
+  # ══════════════════════════════════════════════════════════
+  # Job 2 — build-and-push
+  # Purpose: Build the Docker image and publish it to Docker Hub.
+  #          This job only runs after `test` completes
+  #          successfully, guaranteeing we never ship broken code.
+  # ══════════════════════════════════════════════════════════
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test             # ← Hard dependency on the test job
+
+    steps:
+      # ── Step 1: Check out the repository ──────────────────
+      # Needed so docker/build-push-action can find the
+      # Dockerfile and the application source files.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Set up Docker Buildx ──────────────────────
+      # Buildx is Docker's extended build client. It enables
+      # multi-platform builds, advanced caching, and is
+      # required by docker/build-push-action.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Step 3: Log in to Docker Hub ──────────────────────
+      # Authenticates using repository secrets so that the
+      # push in the next step is authorised. Credentials are
+      # NEVER hardcoded — they are read from GitHub Secrets.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Step 4: Build and push the image ──────────────────
+      # Builds the multi-stage Dockerfile at the repository
+      # root and pushes the resulting image to Docker Hub.
+      # The image is tagged:
+      #   <DOCKERHUB_USERNAME>/nodejs-demo-app:latest
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .           # Build context = repository root
+          file: ./Dockerfile   # Path to the multi-stage Dockerfile
+          push: true           # Push to registry after a successful build
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:latest
